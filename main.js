@@ -448,47 +448,33 @@ function initShippingFreeNotification(forceUpdate = false) {
 // Notice Functions
 function showNotice(message, type = 'success') {
   // Clear existing notices
-  const existingNotices = document.querySelectorAll('.nasa-close-notice');
-  existingNotices.forEach(notice => {
-    notice.click();
-  });
-  
-  // Create notice
-  const noticeWrap = document.createElement('div');
-  noticeWrap.className = `woocommerce-${type === 'success' ? 'message' : 'error'}`;
-  noticeWrap.innerHTML = message;
-  
-  // Add close button
-  const closeButton = document.createElement('a');
-  closeButton.className = 'nasa-close-notice';
-  closeButton.href = 'javascript:void(0);';
-  closeButton.innerHTML = SVG_ICONS.close;
-  closeButton.addEventListener('click', function() {
-    noticeWrap.remove();
-  });
-  
-  // Add check icon for success
-  if (type === 'success') {
-    noticeWrap.insertAdjacentHTML('afterbegin', SVG_ICONS.check);
+  const existingNotices = document.querySelectorAll('.woocommerce-notices-wrapper .woocommerce-message, .woocommerce-notices-wrapper .woocommerce-error');
+  existingNotices.forEach(notice => notice.remove());
+
+  // Create notice wrapper if it doesn't exist
+  let noticesWrapper = document.querySelector('.woocommerce-notices-wrapper');
+  if (!noticesWrapper) {
+    noticesWrapper = document.createElement('div');
+    noticesWrapper.className = 'woocommerce-notices-wrapper';
+    document.body.insertBefore(noticesWrapper, document.body.firstChild);
   }
   
-  // Add to page
-  noticeWrap.appendChild(closeButton);
-  const noticesWrapper = document.querySelector('.woocommerce-notices-wrapper');
-  if (noticesWrapper) {
-    noticesWrapper.appendChild(noticeWrap);
-  } else {
-    document.body.insertAdjacentElement('afterbegin', noticeWrap);
-  }
+  // Create notice element
+  const notice = document.createElement('div');
+  notice.className = type === 'success' ? 'woocommerce-message' : 'woocommerce-error';
+  notice.setAttribute('role', 'alert');
+  notice.textContent = message;
   
-  // Auto-hide after 5 seconds
-  if (noticeTimeout) {
-    clearTimeout(noticeTimeout);
-  }
+  // Add to wrapper
+  noticesWrapper.appendChild(notice);
   
-  noticeTimeout = setTimeout(function() {
-    closeButton.click();
+  // Auto-remove after 5 seconds
+  setTimeout(() => {
+    notice.remove();
   }, 5000);
+  
+  // Scroll to top to show notice
+  window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 // Helper Functions
@@ -501,6 +487,15 @@ function getAjaxUrl(endpoint) {
 
 // Add to Cart Functions
 function handleSingleAddToCart(button, productId, quantity, type, variationId, attributes, extraParams) {
+  // Validate variation selection for variable products
+  if (type === 'variable' && (!variationId || variationId === '0')) {
+    console.error('Variation ID required for variable product');
+    const message = 'Please select some product options before adding this product to your cart.';
+    showNotice(message, 'error');
+    button.classList.remove('loading');
+    return;
+  }
+  
   // Add loading class
   button.classList.add('loading');
   
@@ -517,7 +512,7 @@ function handleSingleAddToCart(button, productId, quantity, type, variationId, a
   formData.append('quantity', quantity);
   
   // Add variation data if applicable
-  if (variationId) {
+  if (variationId && variationId !== '0') {
     formData.append('variation_id', variationId);
     
     // Add attributes
@@ -537,7 +532,10 @@ function handleSingleAddToCart(button, productId, quantity, type, variationId, a
   fetch(ajaxUrl, {
     method: 'POST',
     body: formData,
-    credentials: 'same-origin'
+    credentials: 'same-origin',
+    headers: {
+      'X-Requested-With': 'XMLHttpRequest'
+    }
   })
   .then(response => response.json())
   .then(data => {
@@ -549,6 +547,9 @@ function handleSingleAddToCart(button, productId, quantity, type, variationId, a
       // Get after add to cart event
       const eventAfterAddToCart = document.querySelector('input[name="nasa-event-after-add-to-cart"]');
       let eventType = eventAfterAddToCart && eventAfterAddToCart.value ? eventAfterAddToCart.value : 'sidebar';
+      
+      // Show success message
+      showNotice('Product added to cart successfully!', 'success');
       
       // Override for cart page
       if (document.querySelector('form.woocommerce-cart-form')) {
@@ -680,6 +681,20 @@ function initEventListeners() {
       
       e.preventDefault();
       
+      // Check if button is disabled
+      if (button.classList.contains('disabled') || button.disabled) {
+        console.log('Button is disabled');
+        
+        if (button.classList.contains('wc-variation-is-unavailable')) {
+          const message = 'This variation is unavailable.';
+          showNotice(message, 'error');
+        } else if (button.classList.contains('wc-variation-selection-needed')) {
+          const message = 'Please select some product options before adding this product to your cart.';
+          showNotice(message, 'error');
+        }
+        return false;
+      }
+      
       // Close any notices
       const closeNotices = document.querySelectorAll('.nasa-close-notice');
       closeNotices.forEach(notice => notice.click());
@@ -690,16 +705,16 @@ function initEventListeners() {
       
       if (!ajaxEnabled || ajaxEnabled.value !== '1') return true;
       
-      // Check if button is disabled
-      if (button.classList.contains('disabled') || button.classList.contains('nasa-ct-disabled')) return false;
-      
       // Get product ID
-      const productId = form.querySelector('input[name="data-product_id"]').value;
+      const productIdInput = form.querySelector('input[name="data-product_id"], input[name="product_id"], input[name="add-to-cart"]');
+      const productId = productIdInput ? productIdInput.value : '';
       if (!productId || button.classList.contains('loading')) return false;
       
       // Get product data
-      const productType = form.querySelector('input[name="data-type"]').value;
-      const quantity = form.querySelector('.quantity input[name="quantity"]').value;
+      const productTypeInput = form.querySelector('input[name="data-type"]');
+      const productType = productTypeInput ? productTypeInput.value : 'simple';
+      const quantityInput = form.querySelector('.quantity input[name="quantity"]');
+      const quantity = quantityInput ? quantityInput.value : '1';
       const variationId = form.querySelector('input[name="variation_id"]') ? 
         parseInt(form.querySelector('input[name="variation_id"]').value) : 0;
       
@@ -707,12 +722,17 @@ function initEventListeners() {
       const attributes = {};
       const fromWishlist = {};
       
-      if (productType === 'variable' && !variationId) return false;
+      if (productType === 'variable' && (!variationId || variationId === 0)) {
+        const message = 'Please select some product options before adding this product to your cart.';
+        showNotice(message, 'error');
+        return false;
+      }
       
       if (variationId > 0 && form.querySelector('.variations')) {
-        const variationSelects = form.querySelectorAll('.variations select');
+        const variationSelects = form.querySelectorAll('.variations select[data-attribute_name], .variations select[name^="attribute_"]');
         variationSelects.forEach(select => {
-          attributes[select.name] = select.value;
+          const attrName = select.name || `attribute_${select.dataset.attribute_name}`;
+          attributes[attrName] = select.value;
         });
         
         // Check if from wishlist
