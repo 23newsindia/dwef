@@ -9,9 +9,14 @@ class VariationForm {
     this.resetVariations = form.querySelector('.reset_variations');
     this.addToCartButton = form.querySelector('.single_add_to_cart_button');
     this.variationIdInput = form.querySelector('.variation_id');
-    this.attributeFields = form.querySelectorAll('select[data-attribute_name]');
+    this.attributeFields = form.querySelectorAll('select[data-attribute_name], select[name^="attribute_"]');
     this.singleVariationWrap = form.querySelector('.single_variation_wrap');
     this.singleVariation = form.querySelector('.single_variation');
+
+    // Store original button text
+    if (this.addToCartButton) {
+      this.addToCartButton.dataset.originalText = this.addToCartButton.textContent;
+    }
 
     this.initializeEvents();
     this.init();
@@ -30,7 +35,8 @@ class VariationForm {
         const wrap = attr.closest('.nasa-attr-ux_wrap');
         if (!wrap) return;
 
-        const select = this.form.querySelector(`select[data-attribute_name="${wrap.dataset.attribute_name}"]`);
+        const attributeName = wrap.dataset.attribute_name;
+        const select = this.form.querySelector(`select[data-attribute_name="${attributeName}"], select[name="attribute_${attributeName}"]`);
         if (!select) return;
 
         // If already selected, deselect
@@ -63,35 +69,55 @@ class VariationForm {
     const hasInitialValues = Array.from(this.attributeFields).some(field => field.value);
     if (hasInitialValues) {
       this.toggleResetLink(true);
-      // Check for initial variation
       this.onAttributeChange();
     } else {
-      // Store default button text
-      this.addToCartButton.dataset.defaultText = this.addToCartButton.textContent;
+      // Initially disable the button for variable products
+      this.toggleAddToCart(false);
     }
+
+    // Update NASA attribute UX to match select values
+    this.syncNasaAttributeUX();
+  }
+
+  syncNasaAttributeUX() {
+    this.attributeFields.forEach(field => {
+      const attributeName = field.dataset.attribute_name || field.name.replace('attribute_', '');
+      const nasaWrapper = this.form.querySelector(`.nasa-attr-ux_wrap[data-attribute_name="${attributeName}"]`);
+      
+      if (nasaWrapper && field.value) {
+        // Remove selected from all
+        nasaWrapper.querySelectorAll('.nasa-attr-ux').forEach(attr => {
+          attr.classList.remove('selected');
+        });
+        
+        // Add selected to current value
+        const selectedAttr = nasaWrapper.querySelector(`.nasa-attr-ux[data-value="${field.value}"]`);
+        if (selectedAttr) {
+          selectedAttr.classList.add('selected');
+        }
+      }
+    });
   }
 
   onAttributeChange() {
     const attributes = this.getChosenAttributes();
     
-    // Debug logging
     console.log('Attribute change detected:', {
       attributes: attributes.data,
       count: attributes.count,
-      chosenCount: attributes.chosenCount,
-      variationData: this.variationData.length > 0 ? 'Available' : 'Using AJAX'
+      chosenCount: attributes.chosenCount
     });
 
+    // Clear previous variation
+    this.variationIdInput.value = '';
+    
     if (attributes.count === attributes.chosenCount && attributes.chosenCount > 0) {
       if (this.useAjax) {
-        console.log('Using AJAX to get variation');
         this.getMatchingVariationFromServer(attributes.data);
       } else {
-        console.log('Finding variation from local data');
         this.findMatchingVariation(attributes.data);
       }
     } else {
-      console.log('Not all attributes selected, resetting');
       this.resetVariationData();
     }
 
@@ -105,14 +131,10 @@ class VariationForm {
     let chosenCount = 0;
 
     this.attributeFields.forEach(field => {
-      // Use the actual attribute name from data-attribute_name
-      const attributeName = field.dataset.attribute_name;
+      const attributeName = field.dataset.attribute_name || field.name.replace('attribute_', '');
       const value = field.value || '';
       
-      // Only count fields that have options (are actual variation attributes)
-      const hasOptions = field.options && field.options.length > 1; // More than just placeholder
-      
-      if (hasOptions && attributeName) {
+      if (attributeName) {
         count++;
         if (value.length > 0) {
           chosenCount++;
@@ -137,22 +159,32 @@ class VariationForm {
 
     try {
       this.form.classList.add('loading');
+      
+      // Get AJAX URL
+      const ajaxUrl = typeof wc_add_to_cart_variation_params !== 'undefined' && wc_add_to_cart_variation_params.wc_ajax_url ? 
+        wc_add_to_cart_variation_params.wc_ajax_url.replace('%%endpoint%%', 'get_variation') :
+        '/wp-admin/admin-ajax.php?action=wc_get_variation';
+
       const formData = new FormData();
       formData.append('product_id', this.form.dataset.product_id);
+      
       Object.entries(attributes).forEach(([key, value]) => {
         formData.append(key, value);
       });
 
-      const response = await fetch(wc_add_to_cart_variation_params.wc_ajax_url.replace('%%endpoint%%', 'get_variation'), {
+      const response = await fetch(ajaxUrl, {
         method: 'POST',
-        body: formData
+        body: formData,
+        credentials: 'same-origin'
       });
 
       const variation = await response.json();
-      if (variation) {
+      
+      if (variation && !variation.error) {
         this.foundVariation(variation);
       } else {
         this.resetVariationData();
+        this.showNoMatchingVariationsMsg();
       }
     } catch (error) {
       console.error('Error fetching variation:', error);
@@ -164,83 +196,63 @@ class VariationForm {
 
   findMatchingVariation(attributes) {
     console.log('Looking for variation with attributes:', attributes);
-    console.log('Available variations:', this.variationData);
     
     const matchingVariation = this.variationData.find(variation => {
-      console.log('Checking variation:', variation);
       return Object.entries(variation.attributes).every(([name, value]) => {
-        // The name from variation.attributes is already the clean attribute name (e.g., 'pa_size')
         const attributeKey = `attribute_${name}`;
         const currentValue = attributes[attributeKey];
         
-        console.log(`Checking attribute ${name}:`, {
-          variationValue: value,
-          currentValue: currentValue,
-          attributeKey: attributeKey,
-          availableAttributes: Object.keys(attributes)
-        });
-        
         // If no value selected for this attribute, skip this variation
         if (!currentValue) {
-          console.log(`No value selected for ${name}, skipping variation`);
           return false;
         }
         
         // If variation allows any value (empty string) or matches exactly
-        const matches = value === '' || currentValue === value;
-        console.log(`Attribute ${name} matches:`, matches);
-        return matches;
+        return value === '' || currentValue === value;
       });
     });
 
-    console.log('Matching variation found:', matchingVariation);
-    
     if (matchingVariation) {
       this.foundVariation(matchingVariation);
     } else {
       this.resetVariationData();
+      this.showNoMatchingVariationsMsg();
     }
   }
 
   foundVariation(variation) {
     console.log('Found variation:', variation);
     
-    requestAnimationFrame(() => {
-      // Update variation ID
-      this.variationIdInput.value = variation.variation_id || variation.id;
+    // Update variation ID
+    this.variationIdInput.value = variation.variation_id || variation.id;
 
-      // Update price HTML if provided
-      if (variation.price_html) {
-        this.singleVariation.innerHTML = variation.price_html;
-      }
+    // Update price HTML if provided
+    if (variation.price_html) {
+      this.singleVariation.innerHTML = variation.price_html;
+    }
 
-      // Update availability
-      const availabilityHtml = variation.availability_html || '';
-      const availabilityElement = this.form.querySelector('.woocommerce-variation-availability');
-      if (availabilityElement) {
-        availabilityElement.innerHTML = availabilityHtml;
-      }
+    // Update availability
+    const availabilityHtml = variation.availability_html || '';
+    const availabilityElement = this.form.querySelector('.woocommerce-variation-availability');
+    if (availabilityElement) {
+      availabilityElement.innerHTML = availabilityHtml;
+    }
 
-     // COMMENT OUT OR REMOVE THIS BLOCK TO PREVENT IMAGE CHANGES
-    // Update images if gallery support exists
-    // if (variation.image && variation.image.src) {
-    //   this.updateProductImage(variation.image);
-    // }
+    // Enable/disable add to cart button
+    const purchasable = variation.is_purchasable && variation.is_in_stock && variation.variation_is_visible;
+    this.toggleAddToCart(purchasable);
+    
+    // Update button text if variation has custom text
+    if (variation.add_to_cart_text) {
+      this.addToCartButton.textContent = variation.add_to_cart_text;
+    }
 
-      // Enable/disable add to cart button
-      const purchasable = variation.is_purchasable && variation.is_in_stock && variation.variation_is_visible;
-      console.log('Variation purchasable:', purchasable);
-      this.toggleAddToCart(purchasable);
-      
-      // Update button text if variation has custom text
-      if (variation.add_to_cart_text) {
-        this.addToCartButton.textContent = variation.add_to_cart_text;
-      }
+    // Show variation details
+    this.singleVariation.style.display = 'block';
+    this.form.classList.add('variation-selected');
 
-      // Show variation details
-      this.singleVariation.style.display = 'block';
-      this.form.classList.add('variation-selected');
-    });
+    // Clear any error messages
+    this.clearNoMatchingVariationsMsg();
   }
 
   resetVariationData() {
@@ -251,31 +263,20 @@ class VariationForm {
     this.toggleAddToCart(false);
     this.form.classList.remove('variation-selected');
     
-    // Reset button text to default
-    const defaultText = this.addToCartButton.dataset.defaultText || 'Add to cart';
-    this.addToCartButton.textContent = defaultText;
-  }
-
-  updateProductImage(image) {
-    const galleryWrapper = document.querySelector('.woocommerce-product-gallery');
-    if (galleryWrapper) {
-      galleryWrapper.querySelectorAll('img').forEach(img => {
-        img.src = image.src;
-        img.srcset = image.srcset || '';
-        img.sizes = image.sizes || '';
-        img.alt = image.alt || '';
-      });
+    // Reset button text to original
+    if (this.addToCartButton.dataset.originalText) {
+      this.addToCartButton.textContent = this.addToCartButton.dataset.originalText;
     }
   }
 
   toggleAddToCart(enable) {
     console.log('Toggle add to cart:', enable);
     if (enable) {
-      this.addToCartButton.classList.remove('disabled', 'wc-variation-selection-needed');
-      this.addToCartButton.classList.remove('wc-variation-is-unavailable');
+      this.addToCartButton.classList.remove('disabled', 'wc-variation-selection-needed', 'wc-variation-is-unavailable');
       this.addToCartButton.disabled = false;
     } else {
       this.addToCartButton.classList.add('disabled', 'wc-variation-selection-needed');
+      this.addToCartButton.classList.remove('wc-variation-is-unavailable');
       this.addToCartButton.disabled = true;
     }
   }
@@ -303,24 +304,39 @@ class VariationForm {
 
     this.resetVariationData();
     this.toggleResetLink(false);
+    this.clearNoMatchingVariationsMsg();
+  }
+
+  showNoMatchingVariationsMsg() {
+    // Remove existing message
+    this.clearNoMatchingVariationsMsg();
+    
+    const message = typeof wc_add_to_cart_variation_params !== 'undefined' ? 
+      wc_add_to_cart_variation_params.i18n_no_matching_variations_text : 
+      'Sorry, no products matched your selection. Please choose a different combination.';
+    
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'wc-no-matching-variations-message';
+    messageDiv.innerHTML = `<p class="wc-no-matching-variations woocommerce-info">${message}</p>`;
+    
+    this.singleVariation.parentNode.insertBefore(messageDiv, this.singleVariation.nextSibling);
+  }
+
+  clearNoMatchingVariationsMsg() {
+    const existingMessage = this.form.querySelector('.wc-no-matching-variations-message');
+    if (existingMessage) {
+      existingMessage.remove();
+    }
   }
 
   updateAttributeValues(attributes) {
     if (this.useAjax) return;
     
-    console.log('Updating attribute values for:', attributes);
-
     this.attributeFields.forEach(field => {
       const currentValue = field.value;
-      const attributeName = field.dataset.attribute_name;
+      const attributeName = field.dataset.attribute_name || field.name.replace('attribute_', '');
       
       if (!attributeName) return;
-
-      // Skip if this is the attribute being changed
-      const attributeKey = `attribute_${attributeName}`;
-      if (attributes.data[attributeKey] === currentValue) {
-        return;
-      }
 
       // Find available variations for this attribute
       const availableOptions = this.findAvailableOptions(attributeName, attributes.data);
@@ -348,18 +364,18 @@ class VariationForm {
     return this.variationData
       .filter(variation => {
         return Object.entries(selectedAttributes).every(([name, value]) => {
-          // Extract the clean attribute name from the key (remove 'attribute_' prefix)
           const cleanName = name.replace('attribute_', '');
           if (cleanName === attributeName) return true;
           if (!value) return true;
-          return variation.attributes[cleanName] === value;
+          return variation.attributes[cleanName] === value || variation.attributes[cleanName] === '';
         });
       })
-      .map(variation => variation.attributes[attributeName]);
+      .map(variation => variation.attributes[attributeName])
+      .filter((value, index, self) => value && self.indexOf(value) === index);
   }
 }
 
-// Cart Handler
+// Enhanced Cart Manager
 class CartManager {
   constructor() {
     if (CartManager.instance) {
@@ -371,13 +387,8 @@ class CartManager {
   }
 
   init() {
-    // Handle cart sidebar open/close
     this.initCartSidebar();
-
-    // Handle remove items
     this.initRemoveItems();
-
-    // Handle add to cart
     this.initAddToCart();
   }
 
@@ -387,23 +398,23 @@ class CartManager {
       if (!addToCartBtn) return;
 
       console.log('Add to cart button clicked');
-      console.log('Button classes:', addToCartBtn.className);
-      console.log('Button disabled:', addToCartBtn.disabled);
       
       e.preventDefault();
 
-      if (addToCartBtn.classList.contains('disabled') || addToCartBtn.classList.contains('nasa-ct-disabled')) {
+      // Check if button is disabled
+      if (addToCartBtn.classList.contains('disabled') || addToCartBtn.disabled) {
         console.log('Button is disabled');
+        
         if (addToCartBtn.classList.contains('wc-variation-is-unavailable')) {
           const message = typeof wc_add_to_cart_variation_params !== 'undefined' ? 
             wc_add_to_cart_variation_params.i18n_unavailable_text : 
             'This variation is unavailable.';
-          window.alert(message);
+          this.showNotice(message, 'error');
         } else if (addToCartBtn.classList.contains('wc-variation-selection-needed')) {
           const message = typeof wc_add_to_cart_variation_params !== 'undefined' ? 
             wc_add_to_cart_variation_params.i18n_make_a_selection_text : 
             'Please select some product options before adding this product to your cart.';
-          window.alert(message);
+          this.showNotice(message, 'error');
         }
         return;
       }
@@ -414,23 +425,185 @@ class CartManager {
         return;
       }
       
-      console.log('Processing add to cart for form');
-
       this.handleAddToCart(form, addToCartBtn);
     });
   }
 
+  async handleAddToCart(form, button) {
+    console.log('handleAddToCart called');
+    
+    // Validate variation selection for variable products
+    if (form.classList.contains('variations_form')) {
+      const variationIdInput = form.querySelector('input[name="variation_id"], .variation_id');
+      const variationId = variationIdInput ? variationIdInput.value : '';
+      
+      if (!variationId || variationId === '0') {
+        console.error('Variation ID required but not found');
+        const message = typeof wc_add_to_cart_variation_params !== 'undefined' ? 
+          wc_add_to_cart_variation_params.i18n_make_a_selection_text : 
+          'Please select some product options before adding this product to your cart.';
+        this.showNotice(message, 'error');
+        return;
+      }
+    }
+    
+    button.classList.add('loading');
+
+    try {
+      // Create FormData from the actual form
+      const formData = new FormData(form);
+      
+      // Ensure we have the required fields
+      const productIdInput = form.querySelector('input[name="product_id"], input[name="add-to-cart"], [name="data-product_id"]');
+      const productId = productIdInput ? productIdInput.value : '';
+      
+      if (!productId) {
+        throw new Error('Product ID not found');
+      }
+      
+      // Convert FormData to URLSearchParams for sending
+      const urlParams = new URLSearchParams();
+      for (const [key, value] of formData.entries()) {
+        urlParams.append(key, value);
+      }
+      
+      console.log('Sending form data:', Object.fromEntries(urlParams));
+
+      // Get AJAX URL
+      const ajaxUrl = typeof wc_add_to_cart_params !== 'undefined' && wc_add_to_cart_params.wc_ajax_url ? 
+        wc_add_to_cart_params.wc_ajax_url.replace('%%endpoint%%', 'add_to_cart') :
+        '/wp-admin/admin-ajax.php?action=wc_add_to_cart';
+        
+      const response = await fetch(ajaxUrl, {
+        method: 'POST',
+        body: urlParams,
+        credentials: 'same-origin',
+        headers: {
+          'X-Requested-With': 'XMLHttpRequest'
+        }
+      });
+
+      // Handle response
+      const contentType = response.headers.get('content-type');
+      let data;
+      
+      if (contentType && contentType.includes('application/json')) {
+        data = await response.json();
+      } else {
+        const text = await response.text();
+        console.log('Non-JSON response received:', text.substring(0, 500));
+        
+        // Try to parse as JSON anyway (sometimes servers send JSON with wrong content-type)
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          // If it's not JSON, check for error messages in HTML
+          if (text.includes('woocommerce-error') || text.includes('Please choose product options')) {
+            throw new Error('Please choose product options before adding to cart');
+          }
+          throw new Error('Invalid server response');
+        }
+      }
+
+      console.log('Server response:', data);
+      
+      if (data.error && data.product_url) {
+        console.log('Server error with redirect URL:', data.product_url);
+        window.location = data.product_url;
+        return;
+      }
+      
+      if (data.error) {
+        throw new Error(data.data || data.message || 'Server returned an error');
+      }
+
+      // Check for redirect to cart
+      if (typeof wc_add_to_cart_params !== 'undefined' && 
+          wc_add_to_cart_params.cart_redirect_after_add === 'yes') {
+        window.location = wc_add_to_cart_params.cart_url;
+        return;
+      }
+
+      // Update fragments if available
+      if (data.fragments) {
+        this.updateCartFragments(data.fragments);
+      }
+
+      // Update button state
+      button.classList.add('added');
+      button.classList.remove('loading');
+
+      // Show success message
+      this.showNotice('Product added to cart successfully!', 'success');
+
+      // Trigger added_to_cart event
+      const addedEvent = new CustomEvent('added_to_cart', {
+        detail: [data.fragments, data.cart_hash, button],
+        bubbles: true
+      });
+      document.body.dispatchEvent(addedEvent);
+      
+      // Open cart sidebar after successful add
+      setTimeout(() => {
+        this.openCartSidebar();
+      }, 500);
+      
+    } catch (error) {
+      console.error('Add to cart error:', error);
+      this.showNotice(error.message || 'Error adding to cart', 'error');
+    } finally {
+      button.classList.remove('loading');
+    }
+  }
+
+  showNotice(message, type = 'success') {
+    // Remove existing notices
+    const existingNotices = document.querySelectorAll('.woocommerce-notices-wrapper .woocommerce-message, .woocommerce-notices-wrapper .woocommerce-error');
+    existingNotices.forEach(notice => notice.remove());
+
+    // Create notice wrapper if it doesn't exist
+    let noticesWrapper = document.querySelector('.woocommerce-notices-wrapper');
+    if (!noticesWrapper) {
+      noticesWrapper = document.createElement('div');
+      noticesWrapper.className = 'woocommerce-notices-wrapper';
+      document.body.insertBefore(noticesWrapper, document.body.firstChild);
+    }
+
+    // Create notice element
+    const notice = document.createElement('div');
+    notice.className = type === 'success' ? 'woocommerce-message' : 'woocommerce-error';
+    notice.setAttribute('role', 'alert');
+    notice.textContent = message;
+
+    // Add to wrapper
+    noticesWrapper.appendChild(notice);
+
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+      notice.remove();
+    }, 5000);
+
+    // Scroll to top to show notice
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
   initCartPersistence() {
     window.addEventListener('load', () => this.refreshCartFragments());
-    setInterval(() => this.refreshCartFragments(), 30000); // Every 30 seconds
+    setInterval(() => this.refreshCartFragments(), 30000);
   }
 
   async refreshCartFragments() {
     try {
-      const response = await fetch(wc_add_to_cart_params.wc_ajax_url.replace('%%endpoint%%', 'get_refreshed_fragments'), {
+      const ajaxUrl = typeof wc_add_to_cart_params !== 'undefined' && wc_add_to_cart_params.wc_ajax_url ? 
+        wc_add_to_cart_params.wc_ajax_url.replace('%%endpoint%%', 'get_refreshed_fragments') :
+        '/wp-admin/admin-ajax.php?action=wc_get_refreshed_fragments';
+
+      const response = await fetch(ajaxUrl, {
         method: 'POST',
+        credentials: 'same-origin',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'X-Requested-With': 'XMLHttpRequest'
         }
       });
 
@@ -441,7 +614,7 @@ class CartManager {
         this.updateCartCount(data.fragments);
 
         if (data.cart_hash) {
-          sessionStorage.setItem(wc_cart_fragments_params.cart_hash_key, data.cart_hash);
+          sessionStorage.setItem('wc_cart_hash', data.cart_hash);
         }
       }
     } catch (error) {
@@ -455,8 +628,19 @@ class CartManager {
 
     let count = '0';
 
-    if (fragments && fragments['.cart-items-count']) {
-      count = fragments['.cart-items-count'];
+    // Try to extract count from fragments
+    if (fragments) {
+      for (const [selector, content] of Object.entries(fragments)) {
+        if (selector.includes('cart-count') || selector.includes('cart-number')) {
+          const tempDiv = document.createElement('div');
+          tempDiv.innerHTML = content;
+          const countElement = tempDiv.querySelector('.nasa-cart-count, .cart-number');
+          if (countElement) {
+            count = countElement.textContent || '0';
+            break;
+          }
+        }
+      }
     }
 
     cartCountElements.forEach(element => {
@@ -510,8 +694,7 @@ class CartManager {
       blackWindow.style.display = 'block';
     }
 
-    document.body.classList.add('nasa-minicart-active');
-    document.body.classList.add('m-ovhd');
+    document.body.classList.add('nasa-minicart-active', 'm-ovhd');
   }
 
   closeCartSidebar() {
@@ -529,8 +712,7 @@ class CartManager {
       blackWindow.style.display = 'none';
     }
 
-    document.body.classList.remove('nasa-minicart-active');
-    document.body.classList.remove('m-ovhd');
+    document.body.classList.remove('nasa-minicart-active', 'm-ovhd');
   }
 
   initRemoveItems() {
@@ -560,15 +742,21 @@ class CartManager {
         throw new Error('Cart item key not found');
       }
 
-      const response = await fetch(wc_add_to_cart_params.wc_ajax_url.replace('%%endpoint%%', 'remove_from_cart'), {
+      const ajaxUrl = typeof wc_add_to_cart_params !== 'undefined' && wc_add_to_cart_params.wc_ajax_url ? 
+        wc_add_to_cart_params.wc_ajax_url.replace('%%endpoint%%', 'remove_from_cart') :
+        '/wp-admin/admin-ajax.php?action=wc_remove_from_cart';
+
+      const response = await fetch(ajaxUrl, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'X-Requested-With': 'XMLHttpRequest'
         },
         body: new URLSearchParams({
           cart_item_key: cartItemKey,
-          security: wc_add_to_cart_params.nonce
-        })
+          security: typeof wc_add_to_cart_params !== 'undefined' ? wc_add_to_cart_params.nonce : ''
+        }),
+        credentials: 'same-origin'
       });
 
       const data = await response.json();
@@ -588,188 +776,9 @@ class CartManager {
     }
   }
 
-  async handleAddToCart(form, button) {
-    console.log('handleAddToCart called');
-    
-    // Get form data exactly like WooCommerce expects - try multiple selectors
-    const productIdInput = form.querySelector('input[name="product_id"]') || 
-                          form.querySelector('input[name="add-to-cart"]') ||
-                          form.querySelector('[name="data-product_id"]');
-    const variationIdInput = form.querySelector('input[name="variation_id"]') || 
-                            form.querySelector('.variation_id') ||
-                            form.querySelector('input.variation_id');
-    const quantityInput = form.querySelector('input[name="quantity"]') || 
-                         form.querySelector('.qty') ||
-                         form.querySelector('input.qty');
-    
-    const productId = productIdInput ? productIdInput.value : '';
-    const variationId = variationIdInput ? variationIdInput.value : '';
-    const quantity = quantityInput ? quantityInput.value : '1';
-
-    console.log('Form inputs found:', {
-      productIdInput: !!productIdInput,
-      variationIdInput: !!variationIdInput,
-      quantityInput: !!quantityInput,
-      productId,
-      variationId,
-      quantity
-    });
-    
-    // Validate required data
-    if (!productId) {
-      console.error('Product ID not found');
-      button.classList.remove('loading');
-      return;
-    }
-    
-    // For variable products, variation ID is required
-    if (form.classList.contains('variations_form') && (!variationId || variationId === '0')) {
-      console.error('Variation ID required but not found');
-      const message = typeof wc_add_to_cart_variation_params !== 'undefined' ? 
-        wc_add_to_cart_variation_params.i18n_make_a_selection_text : 
-        'Please select some product options before adding this product to your cart.';
-      window.alert(message);
-      button.classList.remove('loading');
-      return;
-    }
-
-    // Collect all variation attributes - be more thorough
-    const variations = {};
-    
-    // Get attributes from select elements
-    form.querySelectorAll('select[name^="attribute_"], select[data-attribute_name]').forEach(select => {
-      if (select.value) {
-        const attrName = select.name || `attribute_${select.dataset.attribute_name}`;
-        variations[attrName] = select.value;
-        console.log('Variation select:', attrName, '=', select.value);
-      }
-    });
-    
-    // Get attributes from hidden inputs
-    form.querySelectorAll('input[name^="attribute_"]').forEach(input => {
-      if (input.value) {
-        variations[input.name] = input.value;
-        console.log('Variation input:', input.name, '=', input.value);
-      }
-    });
-
-    console.log('Final product data:', { productId, variationId, quantity, variations });
-
-    button.classList.add('loading');
-
-    try {
-      // Try to get the exact same data that would be sent by a normal form submission
-      const formData = new FormData(form);
-      
-      // Ensure required fields are present
-      if (!formData.has('product_id') && !formData.has('add-to-cart')) {
-        formData.set('product_id', productId);
-      }
-      
-      if (!formData.has('quantity')) {
-        formData.set('quantity', quantity);
-      }
-      
-      if (variationId && !formData.has('variation_id')) {
-        formData.set('variation_id', variationId);
-      }
-      
-      // Convert FormData to URLSearchParams for logging and sending
-      const urlParams = new URLSearchParams();
-      for (const [key, value] of formData.entries()) {
-        urlParams.append(key, value);
-      }
-      
-      console.log('Sending form data:', Object.fromEntries(urlParams));
-
-      // Get AJAX URL
-      const ajaxUrl = typeof wc_add_to_cart_params !== 'undefined' && wc_add_to_cart_params.wc_ajax_url ? 
-        wc_add_to_cart_params.wc_ajax_url.replace('%%endpoint%%', 'add_to_cart') :
-        '/wp-admin/admin-ajax.php?action=wc_add_to_cart';
-        
-      const response = await fetch(ajaxUrl, {
-        method: 'POST',
-        body: urlParams,
-        credentials: 'same-origin'
-      });
-
-      // Handle both JSON and HTML responses
-      const contentType = response.headers.get('content-type');
-      let data;
-      
-      if (contentType && contentType.includes('application/json')) {
-        data = await response.json();
-      } else {
-        // If HTML response, it might be an error page or redirect
-        const text = await response.text();
-        console.log('Non-JSON response received:', text.substring(0, 500));
-        
-        // Check if it's a WooCommerce error
-        if (text.includes('woocommerce-error') || text.includes('Please choose product options')) {
-          throw new Error('Please choose product options before adding to cart');
-        }
-        
-        // If response is not JSON, treat as error
-        throw new Error('Invalid server response');
-      }
-
-      // Handle response like WooCommerce does
-      if (!data) {
-        console.log('Empty response from server');
-        button.classList.remove('loading');
-        return;
-      }
-      
-      console.log('Server response:', data);
-      
-      if (data.error && data.product_url) {
-        console.log('Server error with redirect URL:', data.product_url);
-        window.location = data.product_url;
-        return;
-      }
-      
-      if (data.error) {
-        throw new Error(data.data || data.message || 'Server returned an error');
-      }
-
-      // Redirect to cart option
-      if (typeof wc_add_to_cart_params !== 'undefined' && 
-          wc_add_to_cart_params.cart_redirect_after_add === 'yes') {
-        window.location = wc_add_to_cart_params.cart_url;
-        return;
-      }
-
-      // Update fragments if available
-      if (data.fragments) {
-        this.updateCartFragments(data.fragments);
-      }
-
-      // Update button state
-      button.classList.add('added');
-      button.classList.remove('loading');
-
-      // Trigger added_to_cart event like WooCommerce does
-      const addedEvent = new CustomEvent('added_to_cart', {
-        detail: [data.fragments, data.cart_hash, button],
-        bubbles: true
-      });
-      document.body.dispatchEvent(addedEvent);
-      
-      // Open cart sidebar after successful add
-      this.openCartSidebar();
-      
-    } catch (error) {
-      console.error('Add to cart error:', error);
-      button.classList.remove('loading');
-      
-      // Show error message
-      const errorMessage = error.message || 
-        (typeof wc_add_to_cart_params !== 'undefined' ? wc_add_to_cart_params.i18n_error_message : 'Error adding to cart');
-      window.alert(errorMessage);
-    }
-  }
-
   updateCartFragments(fragments) {
+    if (!fragments) return;
+
     requestAnimationFrame(() => {
       document.body.classList.add('nasa-cart-loading');
 
@@ -787,7 +796,7 @@ class CartManager {
 
     this.updateCartCount(fragments);
 
-    if (window.sessionStorage) {
+    if (window.sessionStorage && typeof wc_cart_fragments_params !== 'undefined') {
       sessionStorage.setItem(wc_cart_fragments_params.fragment_name, JSON.stringify(fragments));
       sessionStorage.setItem('wc_cart_created', (new Date()).getTime());
     }
@@ -796,9 +805,11 @@ class CartManager {
 
 // Initialize on DOM load
 document.addEventListener('DOMContentLoaded', () => {
+  // Initialize variation forms
   document.querySelectorAll('.variations_form').forEach(form => {
     new VariationForm(form);
   });
 
+  // Initialize cart manager
   new CartManager();
 });
