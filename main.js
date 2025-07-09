@@ -479,10 +479,12 @@ function showNotice(message, type = 'success') {
 
 // Helper Functions
 function getAjaxUrl(endpoint) {
-  if (typeof nasa_ajax_params !== 'undefined' && typeof nasa_ajax_params.wc_ajax_url !== 'undefined') {
+  if (typeof nasa_ajax_params !== 'undefined' && nasa_ajax_params.wc_ajax_url) {
     return nasa_ajax_params.wc_ajax_url.toString().replace('%%endpoint%%', endpoint);
+  } else if (typeof wc_add_to_cart_params !== 'undefined' && wc_add_to_cart_params.wc_ajax_url) {
+    return wc_add_to_cart_params.wc_ajax_url.toString().replace('%%endpoint%%', endpoint);
   }
-  return null;
+  return `/wp-admin/admin-ajax.php?action=wc_${endpoint}`;
 }
 
 // Add to Cart Functions
@@ -494,6 +496,23 @@ function handleSingleAddToCart(button, productId, quantity, type, variationId, a
     showNotice(message, 'error');
     button.classList.remove('loading');
     return;
+  }
+  
+  // Additional validation for variation attributes
+  if (type === 'variable') {
+    const form = button.closest('form.cart');
+    if (form) {
+      const attributeFields = form.querySelectorAll('select[data-attribute_name], select[name^="attribute_"]');
+      const missingAttributes = Array.from(attributeFields).filter(field => !field.value);
+      
+      if (missingAttributes.length > 0) {
+        console.error('Missing required attributes');
+        const message = 'Please select all product options before adding this product to your cart.';
+        showNotice(message, 'error');
+        button.classList.remove('loading');
+        return;
+      }
+    }
   }
   
   // Add loading class
@@ -728,10 +747,22 @@ function initEventListeners() {
         return false;
       }
       
+      // Additional validation for variable products
+      if (productType === 'variable') {
+        const attributeFields = form.querySelectorAll('select[data-attribute_name], select[name^="attribute_"]');
+        const missingAttributes = Array.from(attributeFields).filter(field => !field.value);
+        
+        if (missingAttributes.length > 0) {
+          const message = 'Please select all product options before adding this product to your cart.';
+          showNotice(message, 'error');
+          return false;
+        }
+      }
+      
       if (variationId > 0 && form.querySelector('.variations')) {
         const variationSelects = form.querySelectorAll('.variations select[data-attribute_name], .variations select[name^="attribute_"]');
         variationSelects.forEach(select => {
-          const attrName = select.name || `attribute_${select.dataset.attribute_name}`;
+          const attrName = select.name || select.dataset.attribute_name;
           attributes[attrName] = select.value;
         });
         
