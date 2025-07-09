@@ -32,11 +32,17 @@ class VariationForm {
     this.form.querySelectorAll('.nasa-attr-ux').forEach(attr => {
       attr.addEventListener('click', (e) => {
         e.preventDefault();
+        console.log('NASA attr clicked:', attr.dataset.value);
+        
         const wrap = attr.closest('.nasa-attr-ux_wrap');
         if (!wrap) return;
 
-        const attributeName = wrap.dataset.attribute_name;
-        const select = this.form.querySelector(`select[data-attribute_name="${attributeName}"], select[name="attribute_${attributeName}"]`);
+        const attributeName = wrap.dataset.attribute_name; // This should be like "attribute_pa_size"
+        console.log('Attribute name from wrap:', attributeName);
+        
+        const select = this.form.querySelector(`select[data-attribute_name="${attributeName}"], select[name="${attributeName}"]`);
+        console.log('Found select:', select);
+        
         if (!select) return;
 
         // If already selected, deselect
@@ -53,6 +59,8 @@ class VariationForm {
           attr.classList.add('selected');
         }
 
+        console.log('Select value set to:', select.value);
+        
         // Trigger change event
         select.dispatchEvent(new Event('change', { bubbles: true }));
       });
@@ -81,7 +89,7 @@ class VariationForm {
 
   syncNasaAttributeUX() {
     this.attributeFields.forEach(field => {
-      const attributeName = field.dataset.attribute_name || field.name.replace('attribute_', '');
+      const fullAttributeName = field.dataset.attribute_name || field.name;
       const nasaWrapper = this.form.querySelector(`.nasa-attr-ux_wrap[data-attribute_name="${attributeName}"]`);
       
       if (nasaWrapper && field.value) {
@@ -131,7 +139,9 @@ class VariationForm {
     let chosenCount = 0;
 
     this.attributeFields.forEach(field => {
-      const attributeName = field.dataset.attribute_name || field.name.replace('attribute_', '');
+      // Get the clean attribute name (remove 'attribute_' prefix)
+      const fullAttributeName = field.dataset.attribute_name || field.name;
+      const attributeName = fullAttributeName.replace('attribute_', '');
       const value = field.value || '';
       
       if (attributeName) {
@@ -140,7 +150,7 @@ class VariationForm {
           chosenCount++;
         }
         
-        // Store with the correct attribute key format
+        // Store with the clean attribute name to match variation data
         data[`attribute_${attributeName}`] = value;
       }
     });
@@ -161,9 +171,13 @@ class VariationForm {
       this.form.classList.add('loading');
       
       // Get AJAX URL
-      const ajaxUrl = typeof wc_add_to_cart_variation_params !== 'undefined' && wc_add_to_cart_variation_params.wc_ajax_url ? 
-        wc_add_to_cart_variation_params.wc_ajax_url.replace('%%endpoint%%', 'get_variation') :
-        '/wp-admin/admin-ajax.php?action=wc_get_variation';
+      let ajaxUrl = '/wp-admin/admin-ajax.php?action=wc_get_variation';
+      
+      if (typeof wc_add_to_cart_variation_params !== 'undefined' && wc_add_to_cart_variation_params.wc_ajax_url) {
+        ajaxUrl = wc_add_to_cart_variation_params.wc_ajax_url.replace('%%endpoint%%', 'get_variation');
+      } else if (typeof nasa_ajax_params !== 'undefined' && nasa_ajax_params.wc_ajax_url) {
+        ajaxUrl = nasa_ajax_params.wc_ajax_url.replace('%%endpoint%%', 'get_variation');
+      }
 
       const formData = new FormData();
       formData.append('product_id', this.form.dataset.product_id);
@@ -196,22 +210,30 @@ class VariationForm {
 
   findMatchingVariation(attributes) {
     console.log('Looking for variation with attributes:', attributes);
+    console.log('Available variations:', this.variationData);
     
     const matchingVariation = this.variationData.find(variation => {
+      console.log('Checking variation:', variation.variation_id, variation.attributes);
+      
       return Object.entries(variation.attributes).every(([name, value]) => {
-        const attributeKey = `attribute_${name}`;
-        const currentValue = attributes[attributeKey];
+        // The attributes object should already have the correct format
+        const currentValue = attributes[`attribute_${name}`];
+        console.log(`Comparing ${name}: variation="${value}" vs selected="${currentValue}"`);
         
         // If no value selected for this attribute, skip this variation
         if (!currentValue) {
+          console.log(`No value selected for ${name}`);
           return false;
         }
         
         // If variation allows any value (empty string) or matches exactly
-        return value === '' || currentValue === value;
+        const matches = value === '' || currentValue === value;
+        console.log(`Match result for ${name}: ${matches}`);
+        return matches;
       });
     });
 
+    console.log('Matching variation found:', matchingVariation);
     if (matchingVariation) {
       this.foundVariation(matchingVariation);
     } else {
@@ -243,8 +265,8 @@ class VariationForm {
     this.toggleAddToCart(purchasable);
     
     // Update button text if variation has custom text
-    if (variation.add_to_cart_text) {
-      this.addToCartButton.textContent = variation.add_to_cart_text;
+    if (variation.add_to_cart_text || variation.add_to_cart_txt) {
+      this.addToCartButton.textContent = variation.add_to_cart_text || variation.add_to_cart_txt;
     }
 
     // Show variation details
@@ -334,12 +356,13 @@ class VariationForm {
     
     this.attributeFields.forEach(field => {
       const currentValue = field.value;
-      const attributeName = field.dataset.attribute_name || field.name.replace('attribute_', '');
+      const fullAttributeName = field.dataset.attribute_name || field.name;
+      const attributeName = fullAttributeName.replace('attribute_', '');
       
       if (!attributeName) return;
 
       // Find available variations for this attribute
-      const availableOptions = this.findAvailableOptions(attributeName, attributes.data);
+      const availableOptions = this.findAvailableOptions(attributeName, attributes);
 
       // Update select options
       Array.from(field.options).forEach(option => {
@@ -349,7 +372,7 @@ class VariationForm {
       });
 
       // Update NASA attribute UX
-      const nasaWrapper = this.form.querySelector(`.nasa-attr-ux_wrap[data-attribute_name="${attributeName}"]`);
+      const nasaWrapper = this.form.querySelector(`.nasa-attr-ux_wrap[data-attribute_name="${fullAttributeName}"]`);
       if (nasaWrapper) {
         nasaWrapper.querySelectorAll('.nasa-attr-ux').forEach(attr => {
           const isAvailable = availableOptions.includes(attr.dataset.value);
@@ -363,7 +386,7 @@ class VariationForm {
   findAvailableOptions(attributeName, selectedAttributes) {
     return this.variationData
       .filter(variation => {
-        return Object.entries(selectedAttributes).every(([name, value]) => {
+        return Object.entries(selectedAttributes.data || selectedAttributes).every(([name, value]) => {
           const cleanName = name.replace('attribute_', '');
           if (cleanName === attributeName) return true;
           if (!value) return true;
@@ -372,6 +395,28 @@ class VariationForm {
       })
       .map(variation => variation.attributes[attributeName])
       .filter((value, index, self) => value && self.indexOf(value) === index);
+  }
+
+  // Method to validate if variation is properly selected
+  isValidVariationSelected() {
+    const attributes = this.getChosenAttributes();
+    const variationId = this.variationIdInput.value;
+    
+    // Check if all required attributes are selected and variation ID is set
+    return attributes.count === attributes.chosenCount && 
+           attributes.chosenCount > 0 && 
+           variationId && 
+           variationId !== '0';
+  }
+
+  // Method to get current variation data
+  getCurrentVariation() {
+    const variationId = this.variationIdInput.value;
+    if (!variationId || variationId === '0') return null;
+    
+    return this.variationData.find(variation => 
+      variation.variation_id == variationId || variation.id == variationId
+    );
   }
 }
 
@@ -434,6 +479,17 @@ class CartManager {
     
     // Validate variation selection for variable products
     if (form.classList.contains('variations_form')) {
+      const variationForm = window.variationForms?.get(form);
+      
+      if (variationForm && !variationForm.isValidVariationSelected()) {
+        console.error('Variation not properly selected');
+        const message = typeof wc_add_to_cart_variation_params !== 'undefined' ? 
+          wc_add_to_cart_variation_params.i18n_make_a_selection_text : 
+          'Please select some product options before adding this product to your cart.';
+        this.showNotice(message, 'error');
+        return;
+      }
+
       const variationIdInput = form.querySelector('input[name="variation_id"], .variation_id');
       const variationId = variationIdInput ? variationIdInput.value : '';
       
@@ -442,6 +498,17 @@ class CartManager {
         const message = typeof wc_add_to_cart_variation_params !== 'undefined' ? 
           wc_add_to_cart_variation_params.i18n_make_a_selection_text : 
           'Please select some product options before adding this product to your cart.';
+        this.showNotice(message, 'error');
+        return;
+      }
+
+      // Validate that all required attributes are selected
+      const attributeFields = form.querySelectorAll('select[data-attribute_name], select[name^="attribute_"]');
+      const missingAttributes = Array.from(attributeFields).filter(field => !field.value);
+      
+      if (missingAttributes.length > 0) {
+        console.error('Missing required attributes');
+        const message = 'Please select all product options before adding this product to your cart.';
         this.showNotice(message, 'error');
         return;
       }
@@ -469,10 +536,14 @@ class CartManager {
       
       console.log('Sending form data:', Object.fromEntries(urlParams));
 
-      // Get AJAX URL
-      const ajaxUrl = typeof wc_add_to_cart_params !== 'undefined' && wc_add_to_cart_params.wc_ajax_url ? 
-        wc_add_to_cart_params.wc_ajax_url.replace('%%endpoint%%', 'add_to_cart') :
-        '/wp-admin/admin-ajax.php?action=wc_add_to_cart';
+      // Get AJAX URL - try multiple sources
+      let ajaxUrl = '/wp-admin/admin-ajax.php?action=wc_add_to_cart';
+      
+      if (typeof wc_add_to_cart_params !== 'undefined' && wc_add_to_cart_params.wc_ajax_url) {
+        ajaxUrl = wc_add_to_cart_params.wc_ajax_url.replace('%%endpoint%%', 'add_to_cart');
+      } else if (typeof nasa_ajax_params !== 'undefined' && nasa_ajax_params.wc_ajax_url) {
+        ajaxUrl = nasa_ajax_params.wc_ajax_url.replace('%%endpoint%%', 'add_to_cart');
+      }
         
       const response = await fetch(ajaxUrl, {
         method: 'POST',
@@ -594,9 +665,13 @@ class CartManager {
 
   async refreshCartFragments() {
     try {
-      const ajaxUrl = typeof wc_add_to_cart_params !== 'undefined' && wc_add_to_cart_params.wc_ajax_url ? 
-        wc_add_to_cart_params.wc_ajax_url.replace('%%endpoint%%', 'get_refreshed_fragments') :
-        '/wp-admin/admin-ajax.php?action=wc_get_refreshed_fragments';
+      let ajaxUrl = '/wp-admin/admin-ajax.php?action=wc_get_refreshed_fragments';
+      
+      if (typeof wc_add_to_cart_params !== 'undefined' && wc_add_to_cart_params.wc_ajax_url) {
+        ajaxUrl = wc_add_to_cart_params.wc_ajax_url.replace('%%endpoint%%', 'get_refreshed_fragments');
+      } else if (typeof nasa_ajax_params !== 'undefined' && nasa_ajax_params.wc_ajax_url) {
+        ajaxUrl = nasa_ajax_params.wc_ajax_url.replace('%%endpoint%%', 'get_refreshed_fragments');
+      }
 
       const response = await fetch(ajaxUrl, {
         method: 'POST',
@@ -742,9 +817,13 @@ class CartManager {
         throw new Error('Cart item key not found');
       }
 
-      const ajaxUrl = typeof wc_add_to_cart_params !== 'undefined' && wc_add_to_cart_params.wc_ajax_url ? 
-        wc_add_to_cart_params.wc_ajax_url.replace('%%endpoint%%', 'remove_from_cart') :
-        '/wp-admin/admin-ajax.php?action=wc_remove_from_cart';
+      let ajaxUrl = '/wp-admin/admin-ajax.php?action=wc_remove_from_cart';
+      
+      if (typeof wc_add_to_cart_params !== 'undefined' && wc_add_to_cart_params.wc_ajax_url) {
+        ajaxUrl = wc_add_to_cart_params.wc_ajax_url.replace('%%endpoint%%', 'remove_from_cart');
+      } else if (typeof nasa_ajax_params !== 'undefined' && nasa_ajax_params.wc_ajax_url) {
+        ajaxUrl = nasa_ajax_params.wc_ajax_url.replace('%%endpoint%%', 'remove_from_cart');
+      }
 
       const response = await fetch(ajaxUrl, {
         method: 'POST',
@@ -803,11 +882,15 @@ class CartManager {
   }
 }
 
+// Global storage for variation forms
+window.variationForms = new Map();
+
 // Initialize on DOM load
 document.addEventListener('DOMContentLoaded', () => {
   // Initialize variation forms
   document.querySelectorAll('.variations_form').forEach(form => {
-    new VariationForm(form);
+    const variationForm = new VariationForm(form);
+    window.variationForms.set(form, variationForm);
   });
 
   // Initialize cart manager
