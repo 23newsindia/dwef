@@ -90,7 +90,7 @@ class VariationForm {
   syncNasaAttributeUX() {
     this.attributeFields.forEach(field => {
       const fullAttributeName = field.dataset.attribute_name || field.name;
-      const nasaWrapper = this.form.querySelector(`.nasa-attr-ux_wrap[data-attribute_name="${attributeName}"]`);
+      const nasaWrapper = this.form.querySelector(`.nasa-attr-ux_wrap[data-attribute_name="${fullAttributeName}"]`);
       
       if (nasaWrapper && field.value) {
         // Remove selected from all
@@ -139,19 +139,17 @@ class VariationForm {
     let chosenCount = 0;
 
     this.attributeFields.forEach(field => {
-      // Get the clean attribute name (remove 'attribute_' prefix)
       const fullAttributeName = field.dataset.attribute_name || field.name;
-      const attributeName = fullAttributeName.replace('attribute_', '');
       const value = field.value || '';
       
-      if (attributeName) {
+      if (fullAttributeName) {
         count++;
         if (value.length > 0) {
           chosenCount++;
         }
         
-        // Store with the clean attribute name to match variation data
-        data[`attribute_${attributeName}`] = value;
+        // Store with the full attribute name as it appears in variation data
+        data[fullAttributeName] = value;
       }
     });
 
@@ -216,13 +214,14 @@ class VariationForm {
       console.log('Checking variation:', variation.variation_id, variation.attributes);
       
       return Object.entries(variation.attributes).every(([name, value]) => {
-        // The attributes object should already have the correct format
-        const currentValue = attributes[`attribute_${name}`];
-        console.log(`Comparing ${name}: variation="${value}" vs selected="${currentValue}"`);
+        // Match the attribute name format from the form
+        const attributeKey = name.startsWith('attribute_') ? name : `attribute_${name}`;
+        const currentValue = attributes[attributeKey];
+        console.log(`Comparing ${name}: variation="${value}" vs selected="${currentValue}" (key: ${attributeKey})`);
         
         // If no value selected for this attribute, skip this variation
         if (!currentValue) {
-          console.log(`No value selected for ${name}`);
+          console.log(`No value selected for ${attributeKey}`);
           return false;
         }
         
@@ -357,7 +356,8 @@ class VariationForm {
     this.attributeFields.forEach(field => {
       const currentValue = field.value;
       const fullAttributeName = field.dataset.attribute_name || field.name;
-      const attributeName = fullAttributeName.replace('attribute_', '');
+      const attributeName = fullAttributeName.startsWith('attribute_') ? 
+         fullAttributeName.substring(10) : fullAttributeName;
       
       if (!attributeName) return;
 
@@ -386,8 +386,9 @@ class VariationForm {
   findAvailableOptions(attributeName, selectedAttributes) {
     return this.variationData
       .filter(variation => {
-        return Object.entries(selectedAttributes.data || selectedAttributes).every(([name, value]) => {
-          const cleanName = name.replace('attribute_', '');
+        return Object.entries(selectedAttributes.data || selectedAttributes).every(([fullName, value]) => {
+          const cleanName = fullName.startsWith('attribute_') ? 
+            fullName.substring(10) : fullName;
           if (cleanName === attributeName) return true;
           if (!value) return true;
           return variation.attributes[cleanName] === value || variation.attributes[cleanName] === '';
@@ -402,11 +403,16 @@ class VariationForm {
     const attributes = this.getChosenAttributes();
     const variationId = this.variationIdInput.value;
     
-    // Check if all required attributes are selected and variation ID is set
-    return attributes.count === attributes.chosenCount && 
-           attributes.chosenCount > 0 && 
-           variationId && 
-           variationId !== '0';
+    // For variable products, check if all required attributes are selected and variation ID is set
+    if (this.form.classList.contains('variations_form')) {
+      return attributes.count === attributes.chosenCount && 
+             attributes.chosenCount > 0 && 
+             variationId && 
+             variationId !== '0';
+    }
+    
+    // For simple products, always return true
+    return true;
   }
 
   // Method to get current variation data
@@ -504,7 +510,10 @@ class CartManager {
 
       // Validate that all required attributes are selected
       const attributeFields = form.querySelectorAll('select[data-attribute_name], select[name^="attribute_"]');
-      const missingAttributes = Array.from(attributeFields).filter(field => !field.value);
+      const missingAttributes = Array.from(attributeFields).filter(field => {
+        const value = field.value;
+        return !value || value === '';
+      });
       
       if (missingAttributes.length > 0) {
         console.error('Missing required attributes');
@@ -514,24 +523,55 @@ class CartManager {
       }
     }
     
+    // Store current form state before adding to cart
+    const currentFormState = this.storeFormState(form);
+    
     button.classList.add('loading');
 
     try {
-      // Create FormData from the actual form
+      // Create URLSearchParams for better control over the data
+      const urlParams = new URLSearchParams();
+      
+      // Get all form data manually to ensure proper formatting
       const formData = new FormData(form);
       
-      // Ensure we have the required fields
-      const productIdInput = form.querySelector('input[name="product_id"], input[name="add-to-cart"], [name="data-product_id"]');
-      const productId = productIdInput ? productIdInput.value : '';
+      // Convert FormData to URLSearchParams with validation
+      for (const [key, value] of formData.entries()) {
+        // Skip empty values for attribute fields
+        if (key.startsWith('attribute_') && (!value || value === '')) {
+          continue;
+        }
+        urlParams.append(key, value);
+      }
+      
+      // Ensure we have the required product ID
+      let productId = urlParams.get('product_id') || urlParams.get('add-to-cart') || urlParams.get('data-product_id');
+      
+      // Try to get product ID from form attributes if not found in form data
+      if (!productId) {
+        const productIdInput = form.querySelector('input[name="product_id"], input[name="add-to-cart"], [name="data-product_id"]');
+        productId = productIdInput ? productIdInput.value : '';
+        
+        if (productId) {
+          urlParams.append('add-to-cart', productId);
+        }
+      }
       
       if (!productId) {
         throw new Error('Product ID not found');
       }
       
-      // Convert FormData to URLSearchParams for sending
-      const urlParams = new URLSearchParams();
-      for (const [key, value] of formData.entries()) {
-        urlParams.append(key, value);
+      // For variable products, ensure we have variation_id
+      if (form.classList.contains('variations_form')) {
+        const variationId = urlParams.get('variation_id');
+        if (!variationId || variationId === '0') {
+          throw new Error('Variation ID is required for variable products');
+        }
+        
+        // Ensure product_id is set for variations
+        if (!urlParams.get('product_id')) {
+          urlParams.append('product_id', productId);
+        }
       }
       
       console.log('Sending form data:', Object.fromEntries(urlParams));
@@ -550,6 +590,7 @@ class CartManager {
         body: urlParams,
         credentials: 'same-origin',
         headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
           'X-Requested-With': 'XMLHttpRequest'
         }
       });
@@ -607,12 +648,22 @@ class CartManager {
       // Show success message
       this.showNotice('Product added to cart successfully!', 'success');
 
+      // Restore form state after fragments update to prevent reset
+      setTimeout(() => {
+        this.restoreFormState(form, currentFormState);
+      }, 100);
+
       // Trigger added_to_cart event
       const addedEvent = new CustomEvent('added_to_cart', {
         detail: [data.fragments, data.cart_hash, button],
         bubbles: true
       });
       document.body.dispatchEvent(addedEvent);
+      
+      // Remove any lingering error notices after successful add to cart
+      setTimeout(() => {
+        this.removeErrorNotices();
+      }, 200);
       
       // Open cart sidebar after successful add
       setTimeout(() => {
@@ -627,9 +678,96 @@ class CartManager {
     }
   }
 
+  storeFormState(form) {
+    const state = {
+      attributeValues: {},
+      variationId: '',
+      nasaUxSelections: {}
+    };
+
+    // Store attribute field values
+    const attributeFields = form.querySelectorAll('select[data-attribute_name], select[name^="attribute_"]');
+    attributeFields.forEach(field => {
+      const attributeName = field.dataset.attribute_name || field.name;
+      state.attributeValues[attributeName] = field.value;
+    });
+
+    // Store variation ID
+    const variationIdInput = form.querySelector('input[name="variation_id"], .variation_id');
+    if (variationIdInput) {
+      state.variationId = variationIdInput.value;
+    }
+
+    // Store NASA UX selections
+    const nasaUxElements = form.querySelectorAll('.nasa-attr-ux.selected');
+    nasaUxElements.forEach(element => {
+      const wrap = element.closest('.nasa-attr-ux_wrap');
+      if (wrap) {
+        const attributeName = wrap.dataset.attribute_name;
+        state.nasaUxSelections[attributeName] = element.dataset.value;
+      }
+    });
+
+    return state;
+  }
+
+  restoreFormState(form, state) {
+    if (!state) return;
+
+    // Restore attribute field values
+    Object.entries(state.attributeValues).forEach(([attributeName, value]) => {
+      const field = form.querySelector(`select[data-attribute_name="${attributeName}"], select[name="${attributeName}"]`);
+      if (field && value) {
+        field.value = value;
+      }
+    });
+
+    // Restore variation ID
+    if (state.variationId) {
+      const variationIdInput = form.querySelector('input[name="variation_id"], .variation_id');
+      if (variationIdInput) {
+        variationIdInput.value = state.variationId;
+      }
+    }
+
+    // Restore NASA UX selections
+    Object.entries(state.nasaUxSelections).forEach(([attributeName, value]) => {
+      const wrap = form.querySelector(`.nasa-attr-ux_wrap[data-attribute_name="${attributeName}"]`);
+      if (wrap) {
+        // Remove all selected classes first
+        wrap.querySelectorAll('.nasa-attr-ux').forEach(attr => {
+          attr.classList.remove('selected');
+        });
+        
+        // Add selected class to the correct element
+        const selectedAttr = wrap.querySelector(`.nasa-attr-ux[data-value="${value}"]`);
+        if (selectedAttr) {
+          selectedAttr.classList.add('selected');
+        }
+      }
+    });
+
+    // Get the variation form instance and validate the current state
+    const variationForm = window.variationForms?.get(form);
+    if (variationForm) {
+      // Check if we have a valid variation selected
+      if (variationForm.isValidVariationSelected()) {
+        // Enable the add to cart button
+        variationForm.toggleAddToCart(true);
+        
+        // Show the variation details if they exist
+        const singleVariation = form.querySelector('.single_variation');
+        if (singleVariation && singleVariation.innerHTML.trim()) {
+          singleVariation.style.display = 'block';
+          form.classList.add('variation-selected');
+        }
+      }
+    }
+  }
+
   showNotice(message, type = 'success') {
-    // Remove existing notices
-    const existingNotices = document.querySelectorAll('.woocommerce-notices-wrapper .woocommerce-message, .woocommerce-notices-wrapper .woocommerce-error');
+    // Remove existing notices - be more specific about what we remove
+    const existingNotices = document.querySelectorAll('.woocommerce-notices-wrapper .woocommerce-message, .woocommerce-notices-wrapper .woocommerce-error, .woocommerce-notices-wrapper .woocommerce-info');
     existingNotices.forEach(notice => notice.remove());
 
     // Create notice wrapper if it doesn't exist
@@ -858,6 +996,9 @@ class CartManager {
   updateCartFragments(fragments) {
     if (!fragments) return;
 
+    // Remove any error notices before updating fragments
+    this.removeErrorNotices();
+
     requestAnimationFrame(() => {
       document.body.classList.add('nasa-cart-loading');
 
@@ -878,6 +1019,28 @@ class CartManager {
     if (window.sessionStorage && typeof wc_cart_fragments_params !== 'undefined') {
       sessionStorage.setItem(wc_cart_fragments_params.fragment_name, JSON.stringify(fragments));
       sessionStorage.setItem('wc_cart_created', (new Date()).getTime());
+    }
+
+    // Remove error notices after fragment update as well
+    setTimeout(() => {
+      this.removeErrorNotices();
+    }, 100);
+  }
+
+  removeErrorNotices() {
+    // Remove WooCommerce error notices that might appear after successful add to cart
+    const errorNotices = document.querySelectorAll('.woocommerce-notices-wrapper .woocommerce-error');
+    errorNotices.forEach(notice => {
+      // Check if this is the "Please choose product options" error
+      if (notice.textContent.includes('Please choose product options')) {
+        notice.remove();
+      }
+    });
+
+    // Also remove the entire notices wrapper if it's empty
+    const noticesWrapper = document.querySelector('.woocommerce-notices-wrapper');
+    if (noticesWrapper && !noticesWrapper.querySelector('.woocommerce-message, .woocommerce-error, .woocommerce-info')) {
+      noticesWrapper.remove();
     }
   }
 }
